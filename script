@@ -1,0 +1,320 @@
+import sys
+#sys.path.insert(0, 'C:/VS/')        #MODULE
+sys.path.insert(1, 'C:/VS/FILMS/')  #PROJET
+import easyocr
+import os
+from openpyxl import Workbook
+from PIL import Image, ImageEnhance
+import shutil
+import time
+from datetime import datetime
+import re
+
+class Clean_text:
+    def supprimer_caract_entre_parenth(chaine):
+        # Utilisation de regex pour trouver et supprimer les caractères entre parenthèses
+        return re.sub(r'\([^()]*\)', '', chaine)
+
+    def supprimer_caract_no_text(chaine):
+        text=chaine.replace(':','').replace('.','').replace('_','').replace('/','').replace('\\','').replace(']','').replace('[','').replace('*','').replace('!','').replace('?','').replace('\"','').replace('\'','')
+        return text.strip()
+
+class Folder:
+    def list_files(path):
+
+        dico_image={}
+
+        for filename in os.listdir(path):
+            f = os.path.join(path, filename)
+            if os.path.isfile(f):
+                dico_image.update({filename:f})
+
+        #print(f'dico_image -> {dico_image}')
+        return(dico_image)
+
+
+
+class ExcelHandler:
+    def __init__(self,path,project_name):
+        os.makedirs(str(path)+'\\EXCEL\\', exist_ok=True)
+        self.filename = (str(path)+'\\EXCEL\\'+str(project_name)+".xlsx")
+        self.workbook = Workbook()
+        self.active_sheet = self.workbook.active
+
+    def add_data_to_sheet(self, cell, data):
+        self.active_sheet[cell] = data
+
+    def add_header_title(self,data,x):#data one row list colA,colB,colC
+        y=1
+        for each_data in data:
+            self.active_sheet.cell(row=x, column=y, value=each_data)
+            y=y+1
+
+    def add_row_few_column(self,list_data):#data one row few columns
+        x=list_data[0]+1 # +1 keep first row like header
+        y=1
+        for data in list_data:
+            self.active_sheet.cell(row=x, column=y, value=data)
+            y=y+1
+
+    def save_workbook(self):
+        #print(f'excel -> {self.filename}')
+        self.workbook.save(self.filename)
+
+
+
+class Screen():
+    def screen_resize(path,item,angle,name,left,top,right,bottom):
+        ima_1 = Image.open(item[1])
+        ima_2=ima_1.rotate(angle, expand=True)
+
+        locate=(left, top, right, bottom)
+        ima_3=ima_2.crop(locate)
+
+        #ima.show()# Affichez l'image pivotée (optionnel)
+
+        ima_4=ima_3.convert("L")# black and white
+
+        facteur_contraste = 2 # 1.5 # Vous pouvez ajuster ce facteur selon vos besoins
+        # Créer un objet Enhancer pour ajuster le contraste
+        enhancer = ImageEnhance.Contrast(ima_4)
+
+        # Appliquer l'augmentation de contraste
+        ima_5 = enhancer.enhance(facteur_contraste)
+
+        os.makedirs(str(path)+'\\temp\\', exist_ok=True)   
+        temp_path=str(path)+'\\temp\\'+str(name)+str(item[0])
+        ima_5.save(temp_path)
+        return temp_path
+
+class timestamp():
+
+    def datetime():
+        local_timestamp = datetime.now()
+        local_date_time_format=str(local_timestamp)[:16]#DATE ET HEURE
+        local_datetime=local_date_time_format.replace(':','H')
+        return local_datetime
+    
+
+os.system('cls')
+print('---------------START--------------------\n')
+#start=input('Bienvenue dans JACQUETTE AUTO by Romain\n\n APPUYER SUR ENTRER POUR COMMENCER !!\n\n')
+
+now=timestamp.datetime()
+project='jaquette '+str(now)
+header=['id','nom image','titre film','réalisateur','année','genre','act_1','act_2','act_3','act_4','act_5','act_6','act_7','act_8','act_9','act_10','act_11','act_12']
+
+excel_handler = ExcelHandler(sys.path[0],project)# création objet
+excel_handler.add_header_title(header,1)
+excel_handler.save_workbook()
+
+try:
+    dico_image=Folder.list_files(sys.path[0]+'/INPUT/')
+except:
+    print('Absence du répertoire INPUT ou celui ci est vide :-(')
+    end=input('\n\nFin du programme !!')
+    exit()
+
+
+reader = easyocr.Reader(['en'])
+excel_row=1 
+
+for image in dico_image.items():
+
+    list_data=[]
+
+    # ROW IN EXCEL FILE
+    list_data.append(excel_row)
+    print('\n'+str(excel_row))
+
+    # IMAGE NAME
+    list_data.append(image[0])   
+    print(image[0])
+
+    # TITRE
+    image_resize=Screen.screen_resize(sys.path[1],image,270,'titre_',260, 1380, 1440, 1630) #,260, 1380, 1470, 1630)#left,top,right,bottom
+    list_resultats = reader.readtext(image_resize)
+
+    list_title=[]
+    for resultat in list_resultats:
+        #print(f'resultat[1]= {resultat[1]}')
+        list_title.append(resultat[1])
+
+    full_title=' '.join(list_title)
+    upper_title=full_title.upper().strip()
+
+    list_data.append(upper_title)
+    print(upper_title)
+
+
+
+    # REALISATEUR ANNEE GENRE
+    image_resize=Screen.screen_resize(sys.path[1],image,0,'real_ann_genr_',185, 250, 1370, 520)
+    list_resultats = reader.readtext(image_resize)
+
+    list_result=[]
+    for resultat in list_resultats:
+        list_result.append(resultat[1])    
+
+    #print(f'list_result{list_result}')list_result['FICHE TECHNIQUE', 'Realsation', 'Tom DiCILo', 'Scenaro : Tom DiCILLO:', 'Directeur de la photo', 'Paul FERRARA: Origine : USA. Annee : 2010.', 'Duree', '1h25. En couleurs: Genre : Documentaire:']
+
+    real='inconnu' # si pas lu par défaut
+    annee=9999 # si pas lu par défaut
+    genre='inconnu' # si pas lu par défaut
+
+    counter_pos=0
+    for result in list_result:
+        #print(f'result {result}')
+
+        try:
+            pos_real=result.index("sation") # juste pour valider la présence de réalisateur dans la liste result en cours
+            #pos_real=list_result.index(no_index_real)+1
+            full_real=result[pos_real:]
+
+            if len(full_real) >= 7:            
+                pos_cut_real=full_real.index(":")
+                real=full_real[pos_cut_real:].replace(':','').replace('.','').replace('_','').strip()
+            else:
+                real=(list_result[counter_pos+1]).replace(':','').replace('.','').replace('_','')
+
+        except:
+            pass
+
+        try:
+            up_result=result.upper()
+            pos_annee=up_result.index("NNEE")
+            full_annee=up_result[pos_annee:]
+
+            if len(full_annee) >= 5:            
+                pos_cut_annee=full_annee.index(":")
+                no_cut_annee=full_annee[pos_cut_annee:].replace(':','').replace('.','').replace('_','').strip()
+                annee=no_cut_annee[:4]            
+            else:
+                no_cut_annee=(list_result[counter_pos+1]).replace(':','').replace('.','').replace('_','').strip()
+                annee=no_cut_annee[:4]     
+
+        except:
+            pass
+
+
+        try:
+            pos_genre=result.index("enre")
+            full_genre=result[pos_genre:]
+
+            if len(full_genre) >= 5:            
+                pos_cut_genre=full_genre.index(":")
+                genre=full_genre[pos_cut_genre:].replace(':','').replace('.','').replace('_','').lstrip()
+            else:
+                genre=(list_result[counter_pos+1]).replace(':','').replace('.','').replace('_','').lstrip()
+
+        except:
+            pass
+
+        counter_pos+=1
+
+
+
+    list_data.append(real)    
+    list_data.append(annee)    
+    list_data.append(genre)    
+
+    print(real)
+    print(annee)
+    print(genre)
+
+
+
+    # x12 ACTEURS
+    image_resize=Screen.screen_resize(sys.path[1],image,0,'act_',130, 10, 1450, 260)
+    list_resultats = reader.readtext(image_resize)
+
+    list_full_acts=[]
+    full_resultat=[]
+
+    for resultat in list_resultats[1:]:     
+
+        
+        if resultat[2] > 0: # éviter un element dans la list sans caractere ""
+            text=resultat[1]
+            if text[-1] == '-': # retire "-" car séparateur fin de ligne plus nécessaire quand tout est mis sur une ligne
+                text=text[:-1]
+
+            full_resultat.append(text)
+
+
+    text=''.join(full_resultat)
+    #text=text.replace(';',',') 
+
+    text=Clean_text.supprimer_caract_entre_parenth(text)
+    text=Clean_text.supprimer_caract_entre_parenth(text) # case when WHEN YOU'RE STRANGE Jim LADD (lui-meme (voix))
+
+    #text=Clean_text.supprimer_caract_no_text(text)
+    text=text.replace(';',',') 
+    text=text.replace(' et ',' , ') 
+
+    '''
+    if text[-1] == ',': # retire , en fin de liste car déja séparé dans une liste
+            text=text[:-1]
+    
+    text=text+' '
+    text=text.replace(' et ',' , ') 
+
+    '''
+    list_acts=text.split(',')
+
+    for act in list_acts:
+        act=act.strip()
+        list_data.append(act)
+        print(act)
+
+
+    exit()
+    
+    # SAUVEGARDE EXCEL
+
+    excel_handler.add_row_few_column(list_data)
+    excel_handler.save_workbook()
+    excel_row=excel_row+1
+
+
+
+    # PREPARATION NOM FICHIER
+
+    if ('L\'') in upper_title[:2]:
+
+        file_title=(upper_title[2:6])
+        whole_file_title=('('+str(file_title)+') '+str(upper_title))
+  
+    elif ('LA ') in upper_title[:3]:
+
+        file_title=(upper_title[3:7])
+        whole_file_title=('('+str(file_title)+') '+str(upper_title))
+
+    elif ('LES ') in upper_title[:4]:
+
+        file_title=(upper_title[4:8])
+        whole_file_title=('('+str(file_title)+') '+str(upper_title))
+
+    elif ('LE ') in upper_title[:3]:
+
+        file_title=(upper_title[3:7])
+        whole_file_title=('('+str(file_title)+') '+str(upper_title))
+
+
+    else:
+        whole_file_title=upper_title         
+
+
+    clean_file_title=whole_file_title.replace('/','_').replace('\\','_').replace(':','_').replace('?','_').replace('<','_').replace('>','_').replace('\"','_')
+    
+    src = (image[1])
+    dst = 'c:/vs/films/OUTPUT/'+str(clean_file_title)+' _'+str(image[0][:-4])+'.jpg'
+    shutil.copyfile(src, dst)
+    
+    print(f'SAVE chemin / nom du fichier -> {dst}')
+
+    #if excel_row==3:
+    #    exit()
+
+
+end=input('\n\nFin du programme !!')

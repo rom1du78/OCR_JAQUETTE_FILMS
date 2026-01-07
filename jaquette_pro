@@ -1,0 +1,310 @@
+import os
+import sys
+from pathlib import Path
+import tkinter as tk
+from tkinter import ttk, PhotoImage
+from PIL import Image
+import easyocr
+import re
+import shutil
+import logging
+from datetime import datetime
+import unicodedata
+
+# ======================================================
+# METADATA APPLICATION
+# ======================================================
+
+APP_AUTHOR = "rom1"
+APP_VERSION = "v1.0"
+
+# ======================================================
+# ROOT (script OU exe)
+# ======================================================
+
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).parent
+else:
+    ROOT = Path(__file__).parent
+
+INPUT_DIR = ROOT / "INPUT"
+OUTPUT_DIR = ROOT / "OUTPUT"
+TEMP_DIR = ROOT / "temp"
+
+# Zone OCR (image ROTATÉE 270°)
+OCR_ZONE = (290, 1380, 1425, 1630)
+
+LOG_FILE = ROOT / "app.log"
+
+# ======================================================
+# LOGGER
+# ======================================================
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+logging.info(f"Application started - {APP_AUTHOR} {APP_VERSION}")
+
+# ======================================================
+# UTILS
+# ======================================================
+
+def timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def clean_text(text: str) -> str:
+    """OCR → MAJUSCULES → SANS ACCENTS"""
+    text = text.upper()
+
+    while "(" in text and ")" in text:
+        new = re.sub(r"\([^()]*\)", "", text)
+        if new == text:
+            break
+        text = new
+
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+
+    text = re.sub(r"[^A-Z0-9 ]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text[:120]
+
+
+def build_output_filename(title: str, original_name: str) -> str:
+    title = title.upper().strip()
+
+    for prefix in ["AU ", "DES ", "UN "]:
+        if title.startswith(prefix):
+            base = title
+            break
+    else:
+        words = title.split()
+
+        if title.startswith("L "):
+            words = words[1:]
+        elif words and words[0] in ["LE", "LA", "LES"]:
+            words = words[1:]
+
+        number_map = {
+            "1": "UN", "2": "DEUX", "3": "TROIS", "4": "QUAT",
+            "5": "CINQ", "6": "SIX", "7": "SEPT", "8": "HUIT",
+            "9": "NEUF", "10": "DIX"
+        }
+
+        first = words[0]
+
+        if first[0].isdigit():
+            key = number_map.get(first[:2], number_map.get(first[0], first))[:4]
+        else:
+            key = first[:4]
+
+        base = f"({key}) {title}"
+
+    base = (
+        base.replace("/", "_")
+        .replace("\\", "_")
+        .replace(":", "_")
+        .replace("?", "_")
+        .replace("<", "_")
+        .replace(">", "_")
+        .replace('"', "_")
+        .replace("*", "_")
+        .replace("|", "_")
+    )
+
+    stem = Path(original_name).stem
+    return f"{base} _{stem}.jpg"
+
+# ======================================================
+# APPLICATION
+# ======================================================
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("JAQUETTE PRO")
+        self.geometry("1080x630")
+        self.resizable(False, False)
+
+        # ✅ ICÔNE FENÊTRE (PNG)
+        try:
+            icon = PhotoImage(file=str(ROOT / "jaquette_pro.png"))
+            self.iconphoto(True, icon)
+        except Exception as e:
+            logging.warning(f"Window icon not loaded: {e}")
+
+        self.reader = easyocr.Reader(
+            ["fr", "en"],
+            gpu=False,
+            model_storage_directory=str(ROOT / "models"),
+            download_enabled=False
+        )
+
+        self.create_styles()
+        self.create_ui()
+
+        self.last_input_count = 0
+        self.last_output_count = 0
+        self.auto_refresh()
+
+    # --------------------------------------------------
+
+    def create_styles(self):
+        style = ttk.Style(self)
+        style.theme_use("default")
+        style.configure("Red.Horizontal.TProgressbar", background="#cc3333")
+        style.configure("Green.Horizontal.TProgressbar", background="#33aa33")
+
+    # --------------------------------------------------
+
+    def create_ui(self):
+        root = tk.Frame(self)
+        root.pack(fill="both", expand=True, padx=20, pady=15)
+        root.grid_columnconfigure(0, weight=1)
+        root.grid_columnconfigure(1, weight=1)
+
+        # INPUT
+        left = tk.Frame(root)
+        left.grid(row=0, column=0, padx=15, sticky="n")
+        tk.Label(left, text="📥 INPUT", font=("Arial", 26, "bold")).pack()
+        self.input_counter = tk.Label(left, text="Fichiers : 0", font=("Arial", 14, "bold"))
+        self.input_counter.pack(pady=8)
+        self.list_input = tk.Listbox(left, width=58, height=22)
+        self.list_input.pack()
+
+        # OUTPUT
+        right = tk.Frame(root)
+        right.grid(row=0, column=1, padx=15, sticky="n")
+        tk.Label(right, text="📤 OUTPUT", font=("Arial", 26, "bold")).pack()
+        self.output_counter = tk.Label(right, text="Fichiers : 0", font=("Arial", 14, "bold"))
+        self.output_counter.pack(pady=8)
+        self.list_output = tk.Listbox(right, width=58, height=22)
+        self.list_output.pack()
+
+        # Progress
+        self.progress = ttk.Progressbar(
+            root, orient="horizontal", length=1000,
+            mode="determinate", style="Green.Horizontal.TProgressbar"
+        )
+        self.progress.grid(row=1, column=0, columnspan=2, pady=18)
+
+        # Buttons
+        buttons = tk.Frame(root)
+        buttons.grid(row=2, column=0, columnspan=2)
+
+        tk.Button(
+            buttons, text="▶️ LANCER LE TRAITEMENT",
+            font=("Arial", 14, "bold"), width=30,
+            command=self.process
+        ).pack(side="left", padx=20)
+
+        tk.Button(
+            buttons, text="❌ QUITTER",
+            font=("Arial", 12, "bold"), width=15,
+            command=self.destroy
+        ).pack(side="right", padx=20)
+
+        # Signature
+        sig = tk.Label(
+            root,
+            text=f"{APP_AUTHOR} {APP_VERSION}",
+            font=("Arial", 8),
+            fg="black"
+        )
+        sig.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-5)
+
+        self.refresh_lists()
+
+    # --------------------------------------------------
+
+    def refresh_lists(self):
+        self.list_input.delete(0, tk.END)
+        self.list_output.delete(0, tk.END)
+
+        inputs = list(INPUT_DIR.glob("*.*"))
+        outputs = list(OUTPUT_DIR.glob("*.*"))
+
+        for f in inputs:
+            self.list_input.insert(tk.END, f.name)
+        for f in outputs:
+            self.list_output.insert(tk.END, f.name)
+
+        self.input_counter.config(text=f"Fichiers : {len(inputs)}")
+        self.output_counter.config(text=f"Fichiers : {len(outputs)}")
+
+    # --------------------------------------------------
+
+    def auto_refresh(self):
+        try:
+            ic = len(list(INPUT_DIR.glob("*.*")))
+            oc = len(list(OUTPUT_DIR.glob("*.*")))
+
+            if ic != self.last_input_count or oc != self.last_output_count:
+                self.refresh_lists()
+
+            self.last_input_count = ic
+            self.last_output_count = oc
+        except Exception as e:
+            logging.error(e)
+
+        self.after(2000, self.auto_refresh)
+
+    # --------------------------------------------------
+
+    def process(self):
+        images = list(INPUT_DIR.glob("*.*"))
+        if not images:
+            return
+
+        self.progress.configure(style="Red.Horizontal.TProgressbar")
+        self.progress["maximum"] = len(images)
+        self.progress["value"] = 0
+
+        for i, img in enumerate(images, start=1):
+            try:
+                self.process_image(img)
+            except Exception as e:
+                logging.error(f"Error processing {img.name}: {e}")
+
+            self.progress["value"] = i
+            self.update_idletasks()
+
+        self.progress.configure(style="Green.Horizontal.TProgressbar")
+        self.refresh_lists()
+
+    # --------------------------------------------------
+
+    def process_image(self, img_path: Path):
+        with Image.open(img_path) as img:
+            rotated = img.rotate(270, expand=True)
+            crop = rotated.crop(OCR_ZONE)
+
+            crop_path = TEMP_DIR / f"{img_path.stem}_CROP_{timestamp()}.jpg"
+            crop.save(crop_path)
+
+        results = self.reader.readtext(str(crop_path))
+        raw = " ".join(r[1] for r in results)
+
+        title = clean_text(raw) or "SANS_TITRE"
+        final_name = build_output_filename(title, img_path.name)
+
+        shutil.copy(img_path, OUTPUT_DIR / final_name)
+
+# ======================================================
+# MAIN
+# ======================================================
+
+if __name__ == "__main__":
+    INPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    TEMP_DIR.mkdir(exist_ok=True)
+
+    app = App()
+    app.mainloop()
